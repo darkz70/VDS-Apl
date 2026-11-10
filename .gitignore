@@ -1,0 +1,16 @@
+# Секреты
+.env
+
+# Данные бота (создаются при работе)
+applications.json
+applications.json.tmp
+applications.json.broken
+*.db
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
