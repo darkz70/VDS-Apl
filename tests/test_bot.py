@@ -9,6 +9,7 @@ import atexit
 import itertools
 import json
 import os
+from datetime import datetime, timedelta
 import shutil
 import tempfile
 import threading
@@ -224,8 +225,19 @@ class BotFlowTests(unittest.TestCase):
         ]
 
     def fill_answers(self, uid: int, answers: list[str] | None = None):
-        for text in answers or ["Ответ %d" % i for i in range(1, 7)]:
+        # Второй ответ содержит ссылку — она обязательна для «Ваш канал» у КМ
+        default = ["Ответ %d" % i for i in range(1, 7)]
+        default[1] = "https://youtube.com/@test_channel"
+        for text in answers or default:
             self.say(uid, text)
+
+    def submit_helper(self, uid: int) -> int:
+        self.say(uid, "/start")
+        self.click(uid, "menu:apply")
+        self.click(uid, f"role:{cfg.HELPER}")
+        self.fill_answers(uid)
+        self.click(uid, "form:submit")
+        return botmod.store.recent(1)[0]["id"]
 
     # --- tests -----------------------------------------------------------
     def test_admin_ids_and_roles_config(self):
@@ -421,6 +433,126 @@ class BotFlowTests(unittest.TestCase):
         self.say(uid, "/start")
         self.click(uid, "menu:apply")
         self.assertIn("уже есть заявка", self.last_text(uid))
+
+
+    def test_link_required_for_content_maker_channel(self):
+        uid = 1010
+        self.say(uid, "/start")
+        self.click(uid, "menu:apply")
+        self.click(uid, f"role:{cfg.CONTENT_MAKER}")
+        self.click(uid, "proj:toggle:voidsmp")
+        self.click(uid, "proj:next")
+        self.say(uid, "Darkz")
+        self.assertEqual(botmod.get_state(uid)["step"], 1)
+
+        self.say(uid, "просто название канала без адреса")
+        self.assertEqual(botmod.get_state(uid)["step"], 1)  # ответ не принят
+        errors = [
+            c["params"].get("text", "") for c in self.api.calls
+            if c["method"] == "sendMessage"
+            and str(c["params"].get("chat_id")) == str(uid)
+        ]
+        self.assertTrue(any("Нужна ссылка" in t for t in errors))
+
+        self.say(uid, "https://youtube.com/@darkz")
+        self.assertEqual(botmod.get_state(uid)["step"], 2)
+        self.assertIn("Вопрос 3 из 6", self.last_text(uid))
+        self.say(uid, "5 лет")
+        self.say(uid, "16")
+        self.say(uid, "стримы")
+        self.say(uid, "3 стрима в неделю")
+        self.assertIn("Проверьте заявку", self.last_text(uid))
+        self.click(uid, "form:submit")
+        app = botmod.store.recent(1)[0]
+        self.assertIn("youtube.com", app["answers"][1]["a"])
+
+    def test_wiki_profile_link_optional(self):
+        cases = [
+            ("нет", True),
+            ("мой профиль без адреса", False),
+            ("https://voidsmp.fandom.com/wiki/User:Darkz", True),
+        ]
+        for index, (answer, should_pass) in enumerate(cases):
+            with self.subTest(answer=answer):
+                self.setUp()
+                uid = 1100 + index
+                self.say(uid, "/start")
+                self.click(uid, "menu:apply")
+                self.click(uid, f"role:{cfg.WIKI_EDITOR}")
+                self.say(uid, "Тестер")
+                self.assertEqual(botmod.get_state(uid)["step"], 1)
+                self.say(uid, answer)
+                self.assertEqual(
+                    botmod.get_state(uid)["step"], 2 if should_pass else 1
+                )
+
+    def test_cooldown_one_hour(self):
+        self.assertEqual(cfg.APPLICATION_COOLDOWN_SEC, 3600)
+        uid = 1212
+        app_id = self.submit_helper(uid)
+        self.click(cfg.ADMIN_IDS[0], f"dec:accept:{app_id}")  # снимаем «на рассмотрении»
+
+        self.say(uid, "/start")
+        self.click(uid, "menu:apply")
+        self.assertIn("не чаще", self.last_text(uid))
+        self.assertIn("мин.", self.last_text(uid))
+        self.assertNotIn("Выберите направление", self.last_text(uid))
+
+        # Имитируем, что с момента отправки прошёл час с лишним
+        old = (datetime.now(botmod._tz()) - timedelta(seconds=3700)).isoformat(
+            timespec="seconds"
+        )
+        botmod.store.update(app_id, created_at=old)
+        self.say(uid, "/start")
+        self.click(uid, "menu:apply")
+        self.assertIn("Выберите направление", self.last_text(uid))
+
+    def test_cooldown_checked_on_submit(self):
+        uid = 1313
+        self.say(uid, "/start")
+        self.click(uid, "menu:apply")
+        self.click(uid, f"role:{cfg.HELPER}")
+        self.fill_answers(uid)
+        self.assertIn("Проверьте заявку", self.last_text(uid))
+        # Пока пользователь заполнял анкету, от него уже ушла другая заявка
+        botmod.store.create(
+            user_id=uid, role=cfg.HELPER, status="approved",
+            projects=[], answers=[], created_at=botmod.now_iso(),
+        )
+        self.click(uid, "form:submit")
+        self.assertIn("не чаще", self.last_text(uid))
+        self.assertEqual(len(botmod.store.by_user(uid)), 1)
+
+    def test_my_shows_cooldown(self):
+        uid = 1414
+        self.submit_helper(uid)
+        self.say(uid, "/my")
+        self.assertIn("Следующую заявку", self.last_text(uid))
+
+
+class ValidationTests(unittest.TestCase):
+    def test_has_link(self):
+        for text in [
+            "https://youtube.com/@darkz", "http://t.me/void", "www.example.com/c",
+            "t.me/voidsmp", "youtube.com/watch?v=1", "канал.рф/void",
+            "https://vk.com/id1", "discord.gg/abc",
+        ]:
+            with self.subTest(text=text):
+                self.assertTrue(botmod.has_link(text))
+        for text in [
+            "нет", "просто название канала", "стримы", "1.20",
+            "мой канал 5 раз", "https://x",
+        ]:
+            with self.subTest(text=text):
+                self.assertFalse(botmod.has_link(text))
+
+    def test_link_error_rules(self):
+        self.assertIsNotNone(botmod.link_error(cfg.CONTENT_MAKER, 1, "нет канала"))
+        self.assertIsNone(botmod.link_error(cfg.CONTENT_MAKER, 1, "t.me/voidsmp"))
+        self.assertIsNone(botmod.link_error(cfg.CONTENT_MAKER, 0, "без ссылки"))
+        self.assertIsNone(botmod.link_error(cfg.WIKI_EDITOR, 1, "нет"))
+        self.assertIsNotNone(botmod.link_error(cfg.WIKI_EDITOR, 1, "просто текст"))
+        self.assertIsNone(botmod.link_error(cfg.HELPER, 1, "просто текст"))
 
 
 class StoreTests(unittest.TestCase):

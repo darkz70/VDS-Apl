@@ -35,6 +35,14 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    try:
+        return max(0, int(raw)) if raw else default
+    except ValueError:
+        return default
+
+
 def _admin_ids() -> tuple[int, ...]:
     """По умолчанию заявки уходят ТОЛЬКО этим двум людям."""
     raw = _env("ADMIN_IDS") or "5992994003,1787475400"
@@ -120,6 +128,24 @@ ROLES: dict[str, dict] = {
 MAX_ANSWER_LEN = 450           # лимит одного ответа в анкете
 MIN_ANSWER_LEN = 2
 CARD_ANSWER_LIMIT = 300        # обрезка длинного ответа в карточке для админов
+
+# --- Проверка ссылок ------------------------------------------------------
+# Индексы вопросов (с нуля), где ссылка ОБЯЗАТЕЛЬНА: без неё ответ не примется.
+LINK_REQUIRED: dict[str, list[int]] = {
+    CONTENT_MAKER: [1],        # «Ваш канал -»
+}
+# Где ссылка ожидается, но разрешён честный ответ «нет».
+LINK_OPTIONAL: dict[str, list[int]] = {
+    WIKI_EDITOR: [1],          # «Ссылка на профиль Fandom ... Если нет — напишите «нет»»
+}
+NO_LINK_ANSWERS = (
+    "нет", "нету", "нет ссылки", "нету ссылки", "ссылки нет", "ссылки нету",
+    "без ссылки", "отсутствует", "не указана", "не имеется", "не имею",
+    "не знаю", "пока нет", "—", "-",
+)
+
+# --- Антиспам: кулдаун на отправку заявок (по умолчанию 1 час) ------------
+APPLICATION_COOLDOWN_SEC = _env_int("APPLICATION_COOLDOWN_SEC", 3600)
 
 STATUS_LABELS = {
     "pending": "🕓 На рассмотрении",

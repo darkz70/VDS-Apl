@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import html
 import logging
+import math
+import re
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
@@ -73,6 +75,97 @@ def fmt_dt(value: str | None) -> str:
         return dt.astimezone(_tz()).strftime("%d.%m.%Y %H:%M %Z")
     except (ValueError, TypeError):
         return str(value)
+
+
+# Проверяем НАЛИЧИЕ ссылки в тексте (не доступность сайта — бот не делает
+# сетевых запросов): https://..., www...., t.me/..., youtube.com/..., домен.рф и т.д.
+_URL_RE = re.compile(
+    r"(?:https?://|www\.)\S+\.[^\s]*"
+    r"|(?:\b[\w-]+\.)+[a-zа-яё]{2,}(?:/[^\s]*)?",
+    re.IGNORECASE,
+)
+
+
+def has_link(text: str) -> bool:
+    return bool(_URL_RE.search(text or ""))
+
+
+def link_mode(role_key: str, question_index: int) -> str | None:
+    if question_index in cfg.LINK_REQUIRED.get(role_key, []):
+        return "required"
+    if question_index in cfg.LINK_OPTIONAL.get(role_key, []):
+        return "optional"
+    return None
+
+
+def link_error(role_key: str, question_index: int, text: str) -> str | None:
+    """Возвращает текст ошибки, если в ответе должна быть ссылка, но её нет."""
+    mode = link_mode(role_key, question_index)
+    if not mode or has_link(text):
+        return None
+    cleaned = text.strip().lower().rstrip(".! ")
+    if mode == "optional" and cleaned in cfg.NO_LINK_ANSWERS:
+        return None
+    if mode == "optional":
+        return (
+            "📎 Похоже, в ответе нет ссылки. Пришлите ссылку на профиль "
+            "(https://..., fandom.com/...) или напишите «нет»."
+        )
+    return (
+        "🔗 <b>Нужна ссылка на канал</b> — в ответе не найдено ни одной ссылки.\n\n"
+        "Например: <code>https://youtube.com/@ваш_канал</code>, "
+        "<code>https://t.me/ваш_канал</code> или <code>youtu.be/...</code>. "
+        "Отправьте ответ ещё раз."
+    )
+
+
+def last_submission_time(uid: int):
+    """Время последней отправленной заявки пользователя (или None)."""
+    latest = None
+    for app in store.by_user(uid):
+        raw = app.get("created_at")
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if latest is None or dt > latest:
+            latest = dt
+    return latest
+
+
+def cooldown_left(uid: int) -> int:
+    """Сколько секунд осталось до следующей заявки (0 = можно отправлять)."""
+    limit = cfg.APPLICATION_COOLDOWN_SEC
+    if limit <= 0:
+        return 0
+    last = last_submission_time(uid)
+    if not last:
+        return 0
+    elapsed = (datetime.now(_tz()) - last.astimezone(_tz())).total_seconds()
+    left = limit - elapsed
+    return min(limit, int(left)) if left > 0 else 0
+
+
+def cooldown_text(left: int) -> str:
+    minutes = max(1, math.ceil(left / 60))
+    until = (datetime.now(_tz()) + timedelta(seconds=left)).strftime("%H:%M %Z")
+    return (
+        "⏳ <b>Отправлять заявки можно не чаще одного раза в час.</b>\n\n"
+        f"До следующей заявки осталось ≈{minutes} мин. "
+        f"(можно после {esc(until)}).\n\n"
+        "Это защита от спама. 📂 /my — статус предыдущей заявки."
+    )
+
+
+def show_blocked(uid: int, st: dict, text: str) -> None:
+    show_screen(uid, st, text, markup([
+        [("📂 Мои заявки", "menu:my")],
+        [("🏠 Главное меню", "menu:main")],
+    ]), "menu")
 
 
 def user_info(user) -> dict[str, str]:
@@ -233,6 +326,8 @@ def show_help(uid: int, st: dict) -> None:
         "3️⃣ Ответьте на вопросы анкеты текстовыми сообщениями.\n"
         "4️⃣ Проверьте ответы и нажмите «Отправить».\n"
         "5️⃣ Заявка уйдёт двум администраторам; решение придёт в этот чат.\n\n"
+        "🔗 В вопросе про канал нужна <b>ссылка</b> (https://..., t.me/...).\n"
+        "⏳ Отправлять заявки можно <b>не чаще раза в час</b> — защита от спама.\n\n"
         "<b>Команды:</b>\n"
         "/start — главное меню\n"
         "/my — мои заявки и их статусы\n"
@@ -269,6 +364,10 @@ def show_my(uid: int, st: dict) -> None:
                 f"{esc(cfg.STATUS_LABELS.get(app['status'], app['status']))} · "
                 f"{esc(fmt_dt(app.get('created_at')))}"
             )
+        left = cooldown_left(uid)
+        if left:
+            lines += ["", f"⏳ Следующую заявку можно отправить примерно через "
+                          f"{max(1, math.ceil(left / 60))} мин."]
         lines += ["", "<i>Решение по заявке приходит в этот чат автоматически.</i>"]
         text = "\n".join(lines)
     show_screen(uid, st, text, markup([
@@ -351,6 +450,10 @@ def handle_form_answer(message, st: dict, text: str) -> None:
             "и отправьте ещё раз.",
         )
         return
+    link_problem = link_error(st["role"], st["step"], text)
+    if link_problem:
+        bot.send_message(uid, link_problem)
+        return
     total = len(cfg.ROLES[st["role"]]["questions"])
     st["answers"][st["step"]] = text
     st["step"] += 1
@@ -369,6 +472,10 @@ def submit_application(uid: int, st: dict) -> None:
             markup([[("◀️ В меню", "menu:main")]]),
             "menu",
         )
+        return
+    left = cooldown_left(uid)
+    if left:
+        show_blocked(uid, st, cooldown_text(left))
         return
     role = cfg.ROLES[st["role"]]
     person = st.get("user") or {"username": "", "full_name": "Без имени"}
@@ -779,6 +886,7 @@ def on_callback(call):
         if data == "menu:main":
             show_main(uid, st)
         elif data == "menu:apply":
+            left = cooldown_left(uid)
             if store.pending_for_user(uid):
                 show_screen(
                     uid, st,
@@ -786,6 +894,8 @@ def on_callback(call):
                     "📂 /my — статус",
                     markup([[("◀️ В меню", "menu:main")]]), "menu",
                 )
+            elif left:
+                show_blocked(uid, st, cooldown_text(left))
             else:
                 show_roles(uid, st)
         elif data == "menu:about":
