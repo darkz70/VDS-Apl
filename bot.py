@@ -14,6 +14,7 @@ import re
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import telebot
 from telebot import types
@@ -78,7 +79,8 @@ def fmt_dt(value: str | None) -> str:
 
 
 # Проверяем НАЛИЧИЕ ссылки в тексте (не доступность сайта — бот не делает
-# сетевых запросов): https://..., www...., t.me/..., youtube.com/..., домен.рф и т.д.
+# сетевых запросов). Для необязательной ссылки (профиль Fandom) подходит любая
+# ссылка, для канала контент-мейкера — только YouTube / Twitch.
 _URL_RE = re.compile(
     r"(?:https?://|www\.)\S+\.[^\s]*"
     r"|(?:\b[\w-]+\.)+[a-zа-яё]{2,}(?:/[^\s]*)?",
@@ -86,8 +88,42 @@ _URL_RE = re.compile(
 )
 
 
-def has_link(text: str) -> bool:
-    return bool(_URL_RE.search(text or ""))
+def _link_hosts(text: str) -> list[tuple[str, str]]:
+    """Достаёт из текста пары (хост, путь) для всех похожих на URL токенов."""
+    hosts = []
+    for token in re.findall(r"\S+", text or ""):
+        candidate = token.strip(".,;:!?()[]{}<>\"'«»")
+        if not candidate:
+            continue
+        if "://" not in candidate:
+            candidate = "https://" + candidate
+        try:
+            parsed = urlparse(candidate)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            continue
+        if host and "." in host:
+            hosts.append((host, parsed.path or ""))
+    return hosts
+
+
+def _host_allowed(host: str, allowed: tuple[str, ...] | list[str]) -> bool:
+    return any(host == domain or host.endswith("." + domain) for domain in allowed)
+
+
+def has_link(text: str, allowed_domains=None, require_path: bool = False) -> bool:
+    """Есть ли в тексте ссылка.
+
+    allowed_domains=None — любая ссылка; иначе только указанные домены
+    (и их поддомены). require_path требует путь к каналу/видео, а не голый домен.
+    """
+    if allowed_domains is None:
+        return bool(_URL_RE.search(text or ""))
+    for host, path in _link_hosts(text):
+        if _host_allowed(host, allowed_domains):
+            if not require_path or path.strip("/"):
+                return True
+    return False
 
 
 def link_mode(role_key: str, question_index: int) -> str | None:
@@ -99,22 +135,32 @@ def link_mode(role_key: str, question_index: int) -> str | None:
 
 
 def link_error(role_key: str, question_index: int, text: str) -> str | None:
-    """Возвращает текст ошибки, если в ответе должна быть ссылка, но её нет."""
+    """Возвращает текст ошибки, если ссылка обязательна/ожидается, но её нет."""
     mode = link_mode(role_key, question_index)
-    if not mode or has_link(text):
+    if not mode:
         return None
     cleaned = text.strip().lower().rstrip(".! ")
-    if mode == "optional" and cleaned in cfg.NO_LINK_ANSWERS:
-        return None
     if mode == "optional":
+        if cleaned in cfg.NO_LINK_ANSWERS or has_link(text):
+            return None
         return (
             "📎 Похоже, в ответе нет ссылки. Пришлите ссылку на профиль "
             "(https://..., fandom.com/...) или напишите «нет»."
         )
+    # Обязательная ссылка на канал: только YouTube и Twitch, с путём к каналу.
+    if has_link(
+        text,
+        allowed_domains=cfg.LINK_ALLOWED_DOMAINS,
+        require_path=True,
+    ):
+        return None
     return (
-        "🔗 <b>Нужна ссылка на канал</b> — в ответе не найдено ни одной ссылки.\n\n"
-        "Например: <code>https://youtube.com/@ваш_канал</code>, "
-        "<code>https://t.me/ваш_канал</code> или <code>youtu.be/...</code>. "
+        "🔗 <b>Нужна ссылка на канал: только YouTube или Twitch</b>.\n\n"
+        "Например:\n"
+        "<code>https://youtube.com/@ваш_канал</code>\n"
+        "<code>https://youtu.be/...</code>\n"
+        "<code>https://twitch.tv/ваш_канал</code>\n\n"
+        "Ссылки на Telegram, VK, TikTok и другие площадки не принимаются. "
         "Отправьте ответ ещё раз."
     )
 
@@ -326,7 +372,7 @@ def show_help(uid: int, st: dict) -> None:
         "3️⃣ Ответьте на вопросы анкеты текстовыми сообщениями.\n"
         "4️⃣ Проверьте ответы и нажмите «Отправить».\n"
         "5️⃣ Заявка уйдёт двум администраторам; решение придёт в этот чат.\n\n"
-        "🔗 В вопросе про канал нужна <b>ссылка</b> (https://..., t.me/...).\n"
+        "🔗 В вопросе про канал нужна ссылка только на <b>YouTube или Twitch</b>.\n"
         "⏳ Отправлять заявки можно <b>не чаще раза в час</b> — защита от спама.\n\n"
         "<b>Команды:</b>\n"
         "/start — главное меню\n"

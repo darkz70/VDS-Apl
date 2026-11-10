@@ -453,6 +453,11 @@ class BotFlowTests(unittest.TestCase):
             and str(c["params"].get("chat_id")) == str(uid)
         ]
         self.assertTrue(any("Нужна ссылка" in t for t in errors))
+        self.assertTrue(any("только YouTube или Twitch" in t for t in errors))
+
+        # Telegram-ссылка больше не проходит
+        self.say(uid, "https://t.me/voidsmp")
+        self.assertEqual(botmod.get_state(uid)["step"], 1)
 
         self.say(uid, "https://youtube.com/@darkz")
         self.assertEqual(botmod.get_state(uid)["step"], 2)
@@ -531,7 +536,9 @@ class BotFlowTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
-    def test_has_link(self):
+    def test_has_link_generic(self):
+        # Общий детектор ссылок используется только для необязательной ссылки
+        # (профиль Fandom у редактора Вики). Канал КМ проверяется белым списком.
         for text in [
             "https://youtube.com/@darkz", "http://t.me/void", "www.example.com/c",
             "t.me/voidsmp", "youtube.com/watch?v=1", "канал.рф/void",
@@ -546,11 +553,43 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(botmod.has_link(text))
 
+    def test_channel_accepts_only_youtube_and_twitch(self):
+        accepted = [
+            "https://youtube.com/@darkz",
+            "https://www.youtube.com/channel/UC123",
+            "m.youtube.com/watch?v=abc",
+            "youtube.com/@darkz",
+            "https://youtu.be/abc123",
+            "youtu.be/abc123",
+            "https://twitch.tv/darkz",
+            "www.twitch.tv/darkz",
+            "https://clips.twitch.tv/AbcDef",
+            "Мой канал: youtube.com/@darkz и twitch.tv/darkz",
+        ]
+        rejected = [
+            "нет канала", "просто текст", "@darkz",
+            "https://t.me/voidsmp", "https://vk.com/id1",
+            "https://tiktok.com/@darkz", "https://discord.gg/abc",
+            "https://youtube.com", "https://twitch.tv/",
+            "https://youtube.com.evil.com/@darkz",
+            "https://notyoutube.com/@darkz", "https://x",
+        ]
+        for text in accepted:
+            with self.subTest(accepted=text):
+                self.assertIsNone(botmod.link_error(cfg.CONTENT_MAKER, 1, text))
+        for text in rejected:
+            with self.subTest(rejected=text):
+                self.assertIsNotNone(botmod.link_error(cfg.CONTENT_MAKER, 1, text))
+
     def test_link_error_rules(self):
         self.assertIsNotNone(botmod.link_error(cfg.CONTENT_MAKER, 1, "нет канала"))
-        self.assertIsNone(botmod.link_error(cfg.CONTENT_MAKER, 1, "t.me/voidsmp"))
+        self.assertIsNotNone(botmod.link_error(cfg.CONTENT_MAKER, 1, "t.me/voidsmp"))
         self.assertIsNone(botmod.link_error(cfg.CONTENT_MAKER, 0, "без ссылки"))
         self.assertIsNone(botmod.link_error(cfg.WIKI_EDITOR, 1, "нет"))
+        # У вики ссылка на Fandom по-прежнему принимается
+        self.assertIsNone(botmod.link_error(
+            cfg.WIKI_EDITOR, 1, "https://voidsmp.fandom.com/wiki/User:Darkz"
+        ))
         self.assertIsNotNone(botmod.link_error(cfg.WIKI_EDITOR, 1, "просто текст"))
         self.assertIsNone(botmod.link_error(cfg.HELPER, 1, "просто текст"))
 
