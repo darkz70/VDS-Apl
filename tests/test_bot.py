@@ -236,6 +236,14 @@ class BotFlowTests(unittest.TestCase):
         )
         for role in cfg.ROLES.values():
             self.assertTrue(role["questions"])
+        self.assertEqual(cfg.ROLES[cfg.CONTENT_MAKER]["questions"], [
+            "Ваш ник -",
+            "Ваш канал -",
+            "Сколько вы играете в майнкрафт -",
+            "Ваш возраст -",
+            'Ваша заявка (стримерам писать тут "стримы") -',
+            "Какой уровень активности стримов и/или видеороликов вы планируете на ближайшие полгода -",
+        ])
 
     def test_content_maker_both_projects_and_approval(self):
         uid = 111
@@ -252,10 +260,14 @@ class BotFlowTests(unittest.TestCase):
         self.click(uid, f"role:{cfg.CONTENT_MAKER}")
         self.assertIn("VoidSMP", self.last_text(uid))
         self.assertIn("Майнкилд", self.last_text(uid))
-        callbacks = [b["callback_data"] for b in self.last_buttons(uid)]
+        buttons = self.last_buttons(uid)
+        callbacks = [b["callback_data"] for b in buttons]
+        labels = [b["text"] for b in buttons]
         self.assertIn("proj:toggle:voidsmp", callbacks)
         self.assertIn("proj:toggle:minkild", callbacks)
-        self.assertIn("proj:both", callbacks)
+        # Кнопки «Оба варианта» больше нет: оба проекта отмечаются по отдельности
+        self.assertNotIn("proj:both", callbacks)
+        self.assertFalse(any("Оба варианта" in label for label in labels))
 
         # Кнопка без выбора проекта не пускает дальше
         self.click(uid, "proj:next")
@@ -265,10 +277,12 @@ class BotFlowTests(unittest.TestCase):
         ]
         self.assertTrue(any("хотя бы один проект" in a.get("text", "") for a in alerts))
 
-        self.click(uid, "proj:both")
+        self.click(uid, "proj:toggle:voidsmp")
+        self.click(uid, "proj:toggle:minkild")
         self.assertIn("VoidSMP, Майнкилд", self.last_text(uid))
         self.click(uid, "proj:next")
         self.assertIn("Вопрос 1 из 6", self.last_text(uid))
+        self.assertIn("Ваш ник", self.last_text(uid))
 
         self.fill_answers(uid)
         self.assertIn("Проверьте заявку", self.last_text(uid))

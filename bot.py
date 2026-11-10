@@ -208,8 +208,8 @@ def show_projects(uid: int, st: dict, selected: list[str]) -> None:
     chosen = project_labels(selected) if selected else "ничего"
     text = (
         "🎬 <b>Контент мейкер</b>\n\n"
-        "Отметьте проект(ы), для которых хотите создавать контент. "
-        "Можно выбрать <b>оба варианта</b>: VoidSMP и Майнкилд.\n\n"
+        "Отметьте проект(ы), для которых хотите создавать контент: "
+        "VoidSMP и Майнкилд можно выбрать вместе, нажав на оба.\n\n"
         f"<b>Выбрано:</b> {chosen}\n\n"
         "<i>Нажмите на проект, чтобы отметить/снять его, затем «Продолжить».</i>"
     )
@@ -218,7 +218,6 @@ def show_projects(uid: int, st: dict, selected: list[str]) -> None:
         mark = "✅ " if key in selected else "▫️ "
         rows.append([(mark + label, f"proj:toggle:{key}")])
     rows += [
-        [("🌐 Оба варианта", "proj:both")],
         [("▶️ Продолжить", "proj:next")],
         [("◀️ К направлениям", "nav:roles")],
     ]
@@ -230,7 +229,7 @@ def show_help(uid: int, st: dict) -> None:
     text = (
         "❓ <b>Как подать заявку</b>\n\n"
         "1️⃣ Нажмите «Подать заявку» и выберите направление.\n"
-        "2️⃣ Для <b>Контент мейкера</b> отметьте VoidSMP, Майнкилд или оба проекта сразу.\n"
+        "2️⃣ Для <b>Контент мейкера</b> отметьте VoidSMP и/или Майнкилд (можно оба).\n"
         "3️⃣ Ответьте на вопросы анкеты текстовыми сообщениями.\n"
         "4️⃣ Проверьте ответы и нажмите «Отправить».\n"
         "5️⃣ Заявка уйдёт двум администраторам; решение придёт в этот чат.\n\n"
@@ -808,9 +807,7 @@ def on_callback(call):
             else:
                 start_form(uid, st, role_key, [])
 
-        # --- выбор проектов контент-мейкера (доступны ОБА) -----------------
-        elif data == "proj:both":
-            show_projects(uid, st, list(cfg.PROJECTS.keys()))
+        # --- выбор проектов контент-мейкера (оба отмечаются отдельно) -----
         elif action == "proj" and len(parts) > 2 and parts[1] == "toggle":
             key = parts[2]
             selected = list(st.get("projects") or [])
